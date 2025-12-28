@@ -90,7 +90,7 @@ const generatePlan = async () => {
           8人，大组长1人，组员7人。组员两人一组，分四组负责各系统。大组的groups.value为3。
         </el-descriptions-item>
         <el-descriptions-item label="pm组（第四大组）">
-          2人，1主1备，工作日上白班。大组的groups.value为4。
+          2人，1主1备，上白班。大组的groups.value为4。
         </el-descriptions-item>
         <el-descriptions-item label="请假处理">
           请假的员工不参与排班。
