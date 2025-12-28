@@ -230,7 +230,11 @@ const saveUser = async () => {
     const userToSave = { ...currentUser.value }
     
     // 处理请假时间
-    if (userToSave.leaveDateRange && userToSave.leaveDateRange.length === 2) {
+    if (userToSave.status === 1 || userToSave.status === '1') {
+      // 状态为正常，清空请假时间
+      userToSave.leaveStartDate = ''
+      userToSave.leaveEndDate = ''
+    } else if (userToSave.leaveDateRange && userToSave.leaveDateRange.length === 2) {
       userToSave.leaveStartDate = userToSave.leaveDateRange[0]
       userToSave.leaveEndDate = userToSave.leaveDateRange[1]
     } else {
@@ -324,7 +328,11 @@ const batchEditUsers = async () => {
         }
         
         // 处理请假时间
-        if (batchLeaveStartDate && batchLeaveEndDate) {
+        // 如果状态为正常，清空请假时间
+        if (updatedUser.status === 1 || updatedUser.status === '1') {
+          updatedUser.leaveStartDate = ''
+          updatedUser.leaveEndDate = ''
+        } else if (batchLeaveStartDate && batchLeaveEndDate) {
           updatedUser.leaveStartDate = batchLeaveStartDate
           updatedUser.leaveEndDate = batchLeaveEndDate
         }
