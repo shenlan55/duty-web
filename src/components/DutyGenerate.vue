@@ -102,7 +102,12 @@ const generatePlan = async () => {
           如果在oncall岗上的人请假，从另一组oncall的组员调人补上。如果oncall在岗大组长请假，不在岗的大组长顶岗。只有补充到oncall在岗大组时才按照24小时班 休 休排班。
         </el-descriptions-item>
         <el-descriptions-item label="goc组排班规则">
-          goc组，大组长和组员都上白班，组员两人组的有三组，还有一组为1人常驻。不在oncall岗上的其他组员优先往oncall组补充，剩余组员往goc组补充上白班，优先往单人小组补充到3人，剩余人补充去其他小组。还有多余的补充到pm组。
+          goc组，大组长和组员都上白班，组员两人组的有三组，还有一组为1人常驻。只有不在oncall岗的oncall大组内组员才会被安排补岗。先给在oncall岗大组补岗（oncall在岗组员保持6人，两人1组），再给goc组补岗，最后给pm补岗。
+          
+          补岗规则：
+          1. 每个9天周期的前三天，刚轮到oncall岗的大组中还没上夜班的成员也要参与补岗
+          2. goc组优先往单人小组补充到3人，剩余人补充去其他小组
+          3. 还有多余的补充到pm组
         </el-descriptions-item>
         <el-descriptions-item label="大组长请假处理">
           如果goc组的大组长请假，不在oncall岗上的大组长兼岗。如果不在oncall岗上的大组长请假，goc组的大组长兼岗。oncall在岗的大组长请假时，不在oncall岗的大组长要兼岗。

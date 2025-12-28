@@ -517,6 +517,7 @@ onMounted(async () => {
         border
         :max-height="'60vh'"
       >
+        <el-table-column type="index" label="序号" width="60"></el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="scope">
             <el-tag 
