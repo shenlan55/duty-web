@@ -48,6 +48,18 @@ public class DutyServiceImpl implements DutyService {
         TimeSlot dayShift = timeSlots.stream().filter(ts -> ts.getType() == 1).findFirst().orElse(null);
         TimeSlot timeSlot24h = timeSlots.stream().filter(ts -> ts.getType() == 3).findFirst().orElse(null);
         
+        // 如果没有白班时间段，创建一个默认的
+        if (dayShift == null) {
+            dayShift = new TimeSlot();
+            dayShift.setType(1);
+            dayShift.setName("白班");
+            dayShift.setStartTime("08:00");
+            dayShift.setEndTime("18:00");
+            dayShift.setStatus(1);
+            dayShift = timeSlotRepository.save(dayShift);
+            timeSlots.add(dayShift);
+        }
+        
         // 如果没有24小时时间段，创建一个默认的
         if (timeSlot24h == null) {
             timeSlot24h = new TimeSlot();
@@ -160,6 +172,7 @@ public class DutyServiceImpl implements DutyService {
             List<User> onDutyMembers = isAGroupOnDuty ? dayOncallAMembers : dayOncallBMembers;
             List<User> offDutyMembers = isAGroupOnDuty ? dayOncallBMembers : dayOncallAMembers;
             
+
             // 3. 处理大组长排班
             
             // 3.1 处理oncall大组长排班
@@ -377,7 +390,7 @@ public class DutyServiceImpl implements DutyService {
             }
             
             // 4.4 准备用于补充到其他组的人员池
-            // 只有不在oncall岗的oncall组组员才会被添加到backupPool中，用于给goc组补岗
+            // 只有不在岗oncall组的oncall组组员才会被添加到backupPool中，用于给goc组补岗
             // oncall在岗组内其他小组组员不参与补岗
             
             // 直接使用不在岗oncall组的所有组员作为备份池
@@ -397,6 +410,62 @@ public class DutyServiceImpl implements DutyService {
                     filteredBackupPool.add(user);
                 }
             }
+            
+            // 如果是当前oncall组9天周期的前3天，将还没上夜班的组员也加入备份池
+            int dayInCycle = dayOfPlan % 9;
+            if (dayInCycle < 3) {
+                // 遍历onDutyMembers，将还没上夜班的组员加入备份池
+                for (User user : onDutyMembers) {
+                    // 检查该用户是否已经在备份池中
+                    boolean alreadyInPool = false;
+                    for (User poolUser : filteredBackupPool) {
+                        if (poolUser.getId().equals(user.getId())) {
+                            alreadyInPool = true;
+                            break;
+                        }
+                    }
+                    if (alreadyInPool) {
+                        continue;
+                    }
+                    
+                    // 检查该用户是否当天上了24小时班
+                    boolean isOn24hDuty = false;
+                    for (User on24hUser : on24hDutyUsers) {
+                        if (on24hUser.getId().equals(user.getId())) {
+                            isOn24hDuty = true;
+                            break;
+                        }
+                    }
+                    if (isOn24hDuty) {
+                        continue;
+                    }
+                    
+                    // 检查该用户是否还没在当前周期上夜班
+                    boolean hasWorkedInCycle = false;
+                    Date lastDutyDate = userLast24hDutyDate.get(user.getId());
+                    if (lastDutyDate != null) {
+                        // 计算当前9天周期的开始日期
+                        Calendar cycleStartCal = Calendar.getInstance();
+                        cycleStartCal.setTime(startDate);
+                        cycleStartCal.add(Calendar.DAY_OF_MONTH, (int) (dayOfPlan / 9) * 9);
+                        Date cycleStartDate = cycleStartCal.getTime();
+                        
+                        // 如果该用户在当前周期开始后上过夜班，则不需要加入
+                        if (lastDutyDate.after(cycleStartDate) || lastDutyDate.equals(cycleStartDate)) {
+                            hasWorkedInCycle = true;
+                        }
+                    }
+                    
+                    // 检查该用户在当前日期是否可以上班（没有请假）
+                    if (canUserWorkOnDate(user, currentDate)) {
+                        // 如果该用户还没在当前周期上夜班，则加入备份池
+                        if (!hasWorkedInCycle) {
+                            filteredBackupPool.add(user);
+                        }
+                    }
+                }
+            }
+            
             backupPool = filteredBackupPool;
             
             // 5. 处理goc组员排班 - 所有goc组人员都上白班
@@ -409,48 +478,69 @@ public class DutyServiceImpl implements DutyService {
             // 5.2 分配goc组员到小组 - 使用当天可用的goc组员
             List<User> tempGocMembers = new ArrayList<>(dayGocMembers);
             
-            // 前3组每组2人
-            for (int i = 0; i < 3 && !tempGocMembers.isEmpty(); i++) {
-                gocTeams.get(i).add(tempGocMembers.remove(0));
-                if (!tempGocMembers.isEmpty()) {
-                    gocTeams.get(i).add(tempGocMembers.remove(0));
-                }
+            System.out.println("日期 " + currentDate + " goc组初始分配前，dayGocMembers人数: " + dayGocMembers.size());
+            System.out.println("日期 " + currentDate + " goc组初始分配前，tempGocMembers人数: " + tempGocMembers.size());
+            
+            // 初始化所有小组为0人
+            for (int i = 0; i < 4; i++) {
+                gocTeams.get(i).clear();
             }
             
-            // 第4组1人常驻
+            // 按照规则分配goc组员：前3组每组2人，第4组1人常驻
+            // 无论dayGocMembers人数多少，都按照这个规则进行分配
+            
+            // 先给前3组每组分配2人
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 2 && !tempGocMembers.isEmpty(); j++) {
+                    gocTeams.get(i).add(tempGocMembers.remove(0));
+                }
+                System.out.println("日期 " + currentDate + " goc小组" + (i+1) + "初始分配后人数: " + gocTeams.get(i).size() + ", 剩余tempGocMembers: " + tempGocMembers.size());
+            }
+            
+            // 再给第4组分配1人（常驻）
             if (!tempGocMembers.isEmpty()) {
                 gocTeams.get(3).add(tempGocMembers.remove(0));
+                System.out.println("日期 " + currentDate + " goc小组4初始分配后人数: " + gocTeams.get(3).size() + ", 剩余tempGocMembers: " + tempGocMembers.size());
+            } else {
+                // 如果没有足够的人员，第4组也需要保证有1人，即使从其他组补充
+                System.out.println("日期 " + currentDate + " goc小组4无初始分配，当前人数: " + gocTeams.get(3).size() + ", 剩余tempGocMembers: " + tempGocMembers.size());
             }
             
             // 5.3 补充不在岗的oncall组员到goc小组 - 补充到goc组的上白班
             // 从备份池中获取剩余人员，按照oncall组的小组顺序补充
             List<User> remainingBackup = new ArrayList<>(backupPool);
             
+            System.out.println("日期 " + currentDate + " goc组补人前，gocTeams各小组人数: ");
+            System.out.println("小组1: " + gocTeams.get(0).size() + "人, 小组2: " + gocTeams.get(1).size() + "人, 小组3: " + gocTeams.get(2).size() + "人, 小组4: " + gocTeams.get(3).size() + "人");
+            System.out.println("日期 " + currentDate + " goc组补人前，remainingBackup人数: " + remainingBackup.size());
+            
             // 优先往单人小组（第4组）补充到3人
             if (gocTeams.get(3).size() < 3 && !remainingBackup.isEmpty()) {
                 while (gocTeams.get(3).size() < 3 && !remainingBackup.isEmpty()) {
-                    gocTeams.get(3).add(remainingBackup.remove(0));
+                    User backupUser = remainingBackup.remove(0);
+                    gocTeams.get(3).add(backupUser);
+                    System.out.println("日期 " + currentDate + " goc小组4补充人员: " + backupUser.getName() + "(ID:" + backupUser.getId() + ")");
                 }
             }
             
-            // 剩余人员补充到goc大组的其他小组，按照小组顺序1、2、3补充
-            // 修复：循环直到remainingBackup为空或所有小组都满员为止
-            int i = 0;
-            while (!remainingBackup.isEmpty()) {
-                int teamNum = i % 3; // 0-2对应goc小组1-3
-                if (gocTeams.get(teamNum).size() < 3) {
-                    gocTeams.get(teamNum).add(remainingBackup.remove(0));
-                }
-                i++;
-                // 防止无限循环：如果连续检查了3次都没有添加人员，说明所有小组都满了
-                if (i > 3 && gocTeams.get(0).size() >= 3 && gocTeams.get(1).size() >= 3 && gocTeams.get(2).size() >= 3) {
-                    break;
+            // 剩余人员补充到goc大组的其他小组，按照小组顺序1、2、3补充，每组补充到3人
+            for (int teamNum = 0; teamNum < 3 && !remainingBackup.isEmpty(); teamNum++) {
+                while (gocTeams.get(teamNum).size() < 3 && !remainingBackup.isEmpty()) {
+                    User backupUser = remainingBackup.remove(0);
+                    gocTeams.get(teamNum).add(backupUser);
+                    System.out.println("日期 " + currentDate + " goc小组" + (teamNum + 1) + "补充人员: " + backupUser.getName() + "(ID:" + backupUser.getId() + ")");
                 }
             }
+            
+            System.out.println("日期 " + currentDate + " goc组补人后，gocTeams各小组人数: ");
+            System.out.println("小组1: " + gocTeams.get(0).size() + "人, 小组2: " + gocTeams.get(1).size() + "人, 小组3: " + gocTeams.get(2).size() + "人, 小组4: " + gocTeams.get(3).size() + "人");
+            System.out.println("日期 " + currentDate + " goc组补人后，remainingBackup剩余人数: " + remainingBackup.size());
             
             // 5.4 将goc组不需要的剩余人员放回backupPool，用于补充到pm组
             backupPool = remainingBackup;
+            System.out.println("日期 " + currentDate + " 补充到pm组的backupPool人数: " + backupPool.size());
             
+
             // 5.5 goc组员白班排班
             if (dayShift != null) {
                 for (int j = 0; j < gocTeams.size(); j++) {
@@ -499,38 +589,42 @@ public class DutyServiceImpl implements DutyService {
                         continue;
                     }
                     
-                    // 检查是否已经被分配到其他组
+                    // 检查是否已经被分配到其他组（仅检查当前日期）
                     boolean isAlreadyAssigned = false;
                     for (DutyPlan plan : plans) {
-                        if (plan.getUserId().equals(user.getId())) {
+                        // 只检查当前日期的排班计划
+                        if (plan.getDate().equals(currentDate) && plan.getUserId().equals(user.getId())) {
                             isAlreadyAssigned = true;
                             break;
                         }
                     }
-                    if (!isAlreadyAssigned) {
-                        // 为该人员创建pm组排班计划
-                        DutyPlan pmPlan = new DutyPlan();
-                        pmPlan.setUserId(user.getId());
-                        pmPlan.setDate(currentDate);
-                        pmPlan.setTimeSlotId(dayShift.getId());
-                        pmPlan.setType(1); // 白班
-                        // 不设置小组ID，项目经理和大组长不要挂小组
-                        pmPlan.setStatus(1);
-                        
-                        // 设置兼大组和兼小组
-                        // 如果是从其他组补充过来的，记录被分配到的pm大组，兼小组为无
-                        if (!pmGroup.contains(user)) {
-                            // 确保pmGroup不为空，避免NullPointerException
-                            if (!pmGroup.isEmpty()) {
-                                pmPlan.setDutyGroupId(pmGroup.get(0).getGroupId()); // 分配到的pm大组
-                            }
-                            // 兼小组设为null，前端显示为"无"
-                        }
-                        
-                        plans.add(pmPlan);
+                    if (isAlreadyAssigned) {
+                        continue;
                     }
+                    
+                    // 为该人员创建pm组排班计划
+                    DutyPlan pmPlan = new DutyPlan();
+                    pmPlan.setUserId(user.getId());
+                    pmPlan.setDate(currentDate);
+                    pmPlan.setTimeSlotId(dayShift.getId());
+                    pmPlan.setType(1); // 白班
+                    // 不设置小组ID，项目经理和大组长不要挂小组
+                    pmPlan.setStatus(1);
+                    
+                    // 设置兼大组和兼小组
+                    // 如果是从其他组补充过来的，记录被分配到的pm大组，兼小组为无
+                    if (!pmGroup.contains(user)) {
+                        // 确保pmGroup不为空，避免NullPointerException
+                        if (!pmGroup.isEmpty()) {
+                            pmPlan.setDutyGroupId(pmGroup.get(0).getGroupId()); // 分配到的pm大组
+                        }
+                        // 兼小组设为null，前端显示为"无"
+                    }
+                    
+                    plans.add(pmPlan);
                 }
             }
+            
             
             calendar.add(Calendar.DAY_OF_MONTH, 1);
         }
