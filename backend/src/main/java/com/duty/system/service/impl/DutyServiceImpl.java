@@ -144,8 +144,8 @@ public class DutyServiceImpl implements DutyService {
             // 当天可用的goc组员（排除大组长）
             List<User> dayGocMembers = dayGocGroup.stream().filter(user -> !user.getIsGroupLeader()).collect(Collectors.toList());
             
-            // 1. 确定当前值班的oncall组（3天一个周期）
-            boolean isAGroupOnDuty = (dayOfPlan / 3) % 2 == 0;
+            // 1. 确定当前值班的oncall组（9天一个周期）
+            boolean isAGroupOnDuty = (dayOfPlan / 9) % 2 == 0;
             
             // 2. 准备值班人员
             // 2.1 oncall在岗组和不在岗组
@@ -324,6 +324,9 @@ public class DutyServiceImpl implements DutyService {
             
             // 如果当前小组人数不足2人，从另一oncall组组员中补充
             List<User> tempBackupPool = new ArrayList<>(offDutyMembers);
+            // 用于记录已经被使用的备份人员ID
+            List<Long> usedBackupUserIds = new ArrayList<>();
+            
             while (currentTeam.size() < 2 && !tempBackupPool.isEmpty()) {
                 // 检查备份人员是否可以上班
                 User backupUser = tempBackupPool.remove(0);
@@ -339,8 +342,12 @@ public class DutyServiceImpl implements DutyService {
                 }
                 if (canWork) {
                     currentTeam.add(backupUser);
+                    usedBackupUserIds.add(backupUser.getId());
                 }
             }
+            
+            // 从offDutyMembers中移除已经被使用的备份人员，避免重复分配
+            offDutyMembers.removeIf(user -> usedBackupUserIds.contains(user.getId()));
             
             // 为当前小组安排24小时班
             for (User user : currentTeam) {
@@ -370,26 +377,13 @@ public class DutyServiceImpl implements DutyService {
             }
             
             // 4.4 准备用于补充到其他组的人员池
-            // 1. 先添加oncall在岗组中没有上24小时班的组员
-            for (User user : onDutyMembers) {
-                // 检查用户是否当天上了24小时班
-                boolean isOn24hDuty = false;
-                for (User on24hUser : on24hDutyUsers) {
-                    if (on24hUser.getId().equals(user.getId())) {
-                        isOn24hDuty = true;
-                        break;
-                    }
-                }
-                if (!isOn24hDuty) {
-                    backupPool.add(user);
-                }
-            }
+            // 只有不在oncall岗的oncall组组员才会被添加到backupPool中，用于给goc组补岗
+            // oncall在岗组内其他小组组员不参与补岗
             
-            // 2. 再添加oncall不在岗组的所有组员
-            // oncall不在岗组的组员不需要休息，因为他们没有上24小时班
-            backupPool.addAll(offDutyMembers);
+            // 直接使用不在岗oncall组的所有组员作为备份池
+            backupPool = new ArrayList<>(offDutyMembers);
             
-            // 3. 确保backupPool中不包含当天上了24小时班的用户
+            // 确保backupPool中不包含当天上了24小时班的用户
             List<User> filteredBackupPool = new ArrayList<>();
             for (User user : backupPool) {
                 boolean isOn24hDuty = false;
@@ -440,10 +434,17 @@ public class DutyServiceImpl implements DutyService {
             }
             
             // 剩余人员补充到goc大组的其他小组，按照小组顺序1、2、3补充
-            for (int i = 0; i < 3 && !remainingBackup.isEmpty(); i++) {
-                // 跳过已经满3人的小组
-                if (gocTeams.get(i).size() < 3) {
-                    gocTeams.get(i).add(remainingBackup.remove(0));
+            // 修复：循环直到remainingBackup为空或所有小组都满员为止
+            int i = 0;
+            while (!remainingBackup.isEmpty()) {
+                int teamNum = i % 3; // 0-2对应goc小组1-3
+                if (gocTeams.get(teamNum).size() < 3) {
+                    gocTeams.get(teamNum).add(remainingBackup.remove(0));
+                }
+                i++;
+                // 防止无限循环：如果连续检查了3次都没有添加人员，说明所有小组都满了
+                if (i > 3 && gocTeams.get(0).size() >= 3 && gocTeams.get(1).size() >= 3 && gocTeams.get(2).size() >= 3) {
+                    break;
                 }
             }
             
@@ -452,8 +453,8 @@ public class DutyServiceImpl implements DutyService {
             
             // 5.5 goc组员白班排班
             if (dayShift != null) {
-                for (int i = 0; i < gocTeams.size(); i++) {
-                    List<User> team = gocTeams.get(i);
+                for (int j = 0; j < gocTeams.size(); j++) {
+                    List<User> team = gocTeams.get(j);
                     for (User user : team) {
                         DutyPlan plan = new DutyPlan();
                         plan.setUserId(user.getId());
@@ -462,13 +463,13 @@ public class DutyServiceImpl implements DutyService {
                         plan.setType(1); // 白班
                         plan.setStatus(1);
                         // 设置小组ID（1-4）
-                        plan.setAssignedSubGroupId(i + 1);
+                        plan.setAssignedSubGroupId(j + 1);
                         
                         // 设置兼大组和兼小组
                         // 如果是从其他组补充过来的，记录被分配到的goc大组和小组
                         if (!gocGroup.contains(user)) {
                             plan.setDutyGroupId(gocGroup.get(0).getGroupId()); // 分配到的goc大组
-                            plan.setDutySubGroupId(i + 1); // 分配到的goc小组
+                            plan.setDutySubGroupId(j + 1); // 分配到的goc小组
                         }
                         
                         plans.add(plan);
