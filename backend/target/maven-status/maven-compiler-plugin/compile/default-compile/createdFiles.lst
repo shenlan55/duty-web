@@ -1,7 +1,6 @@
 com\duty\system\repository\UserRepository.class
 com\duty\system\entity\User.class
 com\duty\system\entity\TimeSlot.class
-com\duty\system\service\impl\DutyServiceImpl.class
 com\duty\system\repository\DutyPlanRepository.class
 com\duty\system\entity\DutyPlan.class
 com\duty\system\config\CorsConfig.class

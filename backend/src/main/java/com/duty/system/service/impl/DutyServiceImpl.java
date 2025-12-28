@@ -95,6 +95,7 @@ public class DutyServiceImpl implements DutyService {
             int dayOfPlan = (int) ((calendar.getTimeInMillis() - startDate.getTime()) / (1000 * 60 * 60 * 24));
             
             // 为当天创建可用用户列表，过滤掉当天请假的用户和需要休息的用户
+
             List<User> dayAvailableUsers = allUsers.stream()
                     .filter(user -> {
                         // 首先检查是否当天可以上班
@@ -102,19 +103,28 @@ public class DutyServiceImpl implements DutyService {
                             return false;
                         }
                         
-                        // 检查是否需要休息（上24小时班后休息2天）
-                        Date lastDutyDate = userLast24hDutyDate.get(user.getId());
-                        if (lastDutyDate != null) {
-                            long diffInDays = (currentDate.getTime() - lastDutyDate.getTime()) / (1000 * 60 * 60 * 24);
-                            // 如果距离上次24小时班不足3天，则需要休息
-                            if (diffInDays < 3) {
-                                return false;
+                        // 只有oncall组的用户需要检查是否需要休息（上24小时班后休息2天）
+                        // oncall组的groupId是1或2
+                        if (user.getGroupId() == 1 || user.getGroupId() == 2) {
+                            Date lastDutyDate = userLast24hDutyDate.get(user.getId());
+                            if (lastDutyDate != null) {
+                                long diffInDays = (currentDate.getTime() - lastDutyDate.getTime()) / (1000 * 60 * 60 * 24);
+                                // 如果距离上次24小时班不足3天，则需要休息
+                                if (diffInDays < 3) {
+                                    System.out.println("用户 " + user.getName() + " (ID: " + user.getId() + ") 在 " + 
+                                            lastDutyDate + " 上了24小时班，需要休息到 " + 
+                                            new Date(lastDutyDate.getTime() + 3 * 24 * 60 * 60 * 1000) + 
+                                            "，因此在 " + currentDate + " 不可用");
+                                    return false;
+                                }
                             }
                         }
                         
                         return true;
                     })
                     .collect(Collectors.toList());
+            
+            System.out.println("日期 " + currentDate + " 可用用户数量: " + dayAvailableUsers.size());
             
             // 当天可用用户按大组分组，注意dayAvailableUsers已经过滤了需要休息的用户
             List<User> dayOncallA = dayAvailableUsers.stream().filter(user -> user.getGroupId() == 1).collect(Collectors.toList());
@@ -152,37 +162,114 @@ public class DutyServiceImpl implements DutyService {
             
             // 3. 处理大组长排班
             
-            // 3.1 oncall-A大组长
-            if (dayShift != null && dayOncallALeader != null) {
-                DutyPlan oncallALeaderPlan = new DutyPlan();
-                oncallALeaderPlan.setUserId(dayOncallALeader.getId());
-                oncallALeaderPlan.setDate(currentDate);
-                oncallALeaderPlan.setTimeSlotId(dayShift.getId());
-                oncallALeaderPlan.setType(1); // 白班
-                oncallALeaderPlan.setStatus(1);
-                plans.add(oncallALeaderPlan);
+            // 3.1 处理oncall大组长排班
+            // oncall在岗大组长和不在岗大组长
+            User actualOnDutyLeader = onDutyLeader;
+            User actualOffDutyLeader = offDutyLeader;
+            User actualGocLeader = dayGocLeader;
+            
+            // 处理oncall在岗大组长请假的情况：不在岗的大组长顶岗
+            if (actualOnDutyLeader == null) {
+                actualOnDutyLeader = offDutyLeader;
             }
             
-            // 3.2 oncall-B大组长
-            if (dayShift != null && dayOncallBLeader != null) {
-                DutyPlan oncallBLeaderPlan = new DutyPlan();
-                oncallBLeaderPlan.setUserId(dayOncallBLeader.getId());
-                oncallBLeaderPlan.setDate(currentDate);
-                oncallBLeaderPlan.setTimeSlotId(dayShift.getId());
-                oncallBLeaderPlan.setType(1); // 白班
-                oncallBLeaderPlan.setStatus(1);
-                plans.add(oncallBLeaderPlan);
+            // 处理不在oncall岗的大组长请假的情况：如果goc组大组长可用，则让goc组大组长兼岗
+            if (actualOffDutyLeader == null && actualGocLeader != null) {
+                actualOffDutyLeader = actualGocLeader;
             }
             
-            // 3.3 goc大组长
-            if (dayShift != null && dayGocLeader != null) {
+            // 处理goc组大组长请假的情况：让不在oncall岗的大组长兼岗
+            if (actualGocLeader == null && actualOffDutyLeader != null) {
+                actualGocLeader = actualOffDutyLeader;
+            }
+            
+            // oncall-A大组长排班
+            if (dayShift != null) {
+                // oncall-A大组长
+                if (isAGroupOnDuty) {
+                    // oncall-A组在岗，安排实际在岗大组长
+                    if (actualOnDutyLeader != null) {
+                        DutyPlan oncallALeaderPlan = new DutyPlan();
+                        oncallALeaderPlan.setUserId(actualOnDutyLeader.getId());
+                        oncallALeaderPlan.setDate(currentDate);
+                        oncallALeaderPlan.setTimeSlotId(dayShift.getId());
+                        oncallALeaderPlan.setType(1); // 白班
+                        oncallALeaderPlan.setStatus(1);
+                        plans.add(oncallALeaderPlan);
+                        
+                        // 设置兼大组：如果实际在岗大组长不是oncall-A组的，设置兼大组
+                        if (!actualOnDutyLeader.getGroupId().equals(oncallA.get(0).getGroupId())) {
+                            oncallALeaderPlan.setDutyGroupId(oncallA.get(0).getGroupId());
+                        }
+                    }
+                } else {
+                    // oncall-A组不在岗，安排实际不在岗大组长
+                    if (actualOffDutyLeader != null) {
+                        DutyPlan oncallALeaderPlan = new DutyPlan();
+                        oncallALeaderPlan.setUserId(actualOffDutyLeader.getId());
+                        oncallALeaderPlan.setDate(currentDate);
+                        oncallALeaderPlan.setTimeSlotId(dayShift.getId());
+                        oncallALeaderPlan.setType(1); // 白班
+                        oncallALeaderPlan.setStatus(1);
+                        plans.add(oncallALeaderPlan);
+                        
+                        // 设置兼大组：如果实际不在岗大组长不是oncall-A组的，设置兼大组
+                        if (!actualOffDutyLeader.getGroupId().equals(oncallA.get(0).getGroupId())) {
+                            oncallALeaderPlan.setDutyGroupId(oncallA.get(0).getGroupId());
+                        }
+                    }
+                }
+                
+                // oncall-B大组长
+                if (!isAGroupOnDuty) {
+                    // oncall-B组在岗，安排实际在岗大组长
+                    if (actualOnDutyLeader != null) {
+                        DutyPlan oncallBLeaderPlan = new DutyPlan();
+                        oncallBLeaderPlan.setUserId(actualOnDutyLeader.getId());
+                        oncallBLeaderPlan.setDate(currentDate);
+                        oncallBLeaderPlan.setTimeSlotId(dayShift.getId());
+                        oncallBLeaderPlan.setType(1); // 白班
+                        oncallBLeaderPlan.setStatus(1);
+                        plans.add(oncallBLeaderPlan);
+                        
+                        // 设置兼大组：如果实际在岗大组长不是oncall-B组的，设置兼大组
+                        if (!actualOnDutyLeader.getGroupId().equals(oncallB.get(0).getGroupId())) {
+                            oncallBLeaderPlan.setDutyGroupId(oncallB.get(0).getGroupId());
+                        }
+                    }
+                } else {
+                    // oncall-B组不在岗，安排实际不在岗大组长
+                    if (actualOffDutyLeader != null) {
+                        DutyPlan oncallBLeaderPlan = new DutyPlan();
+                        oncallBLeaderPlan.setUserId(actualOffDutyLeader.getId());
+                        oncallBLeaderPlan.setDate(currentDate);
+                        oncallBLeaderPlan.setTimeSlotId(dayShift.getId());
+                        oncallBLeaderPlan.setType(1); // 白班
+                        oncallBLeaderPlan.setStatus(1);
+                        plans.add(oncallBLeaderPlan);
+                        
+                        // 设置兼大组：如果实际不在岗大组长不是oncall-B组的，设置兼大组
+                        if (!actualOffDutyLeader.getGroupId().equals(oncallB.get(0).getGroupId())) {
+                            oncallBLeaderPlan.setDutyGroupId(oncallB.get(0).getGroupId());
+                        }
+                    }
+                }
+            }
+            
+            // 3.3 goc大组长排班
+            if (dayShift != null && actualGocLeader != null) {
                 DutyPlan gocLeaderPlan = new DutyPlan();
-                gocLeaderPlan.setUserId(dayGocLeader.getId());
+                gocLeaderPlan.setUserId(actualGocLeader.getId());
                 gocLeaderPlan.setDate(currentDate);
                 gocLeaderPlan.setTimeSlotId(dayShift.getId());
                 gocLeaderPlan.setType(1); // 白班
                 gocLeaderPlan.setStatus(1);
                 plans.add(gocLeaderPlan);
+                
+                // 设置兼大组：如果实际goc大组长不是goc组的，设置兼大组
+                if (!actualGocLeader.getGroupId().equals(gocGroup.get(0).getGroupId())) {
+                    gocLeaderPlan.setDutyGroupId(gocGroup.get(0).getGroupId());
+                }
             }
             
 
@@ -200,7 +287,7 @@ public class DutyServiceImpl implements DutyService {
             }
             
             // 4.2 准备备用人员池（用于补充oncall组）
-            List<User> backupPool = new ArrayList<>(offDutyMembers);
+            List<User> backupPool = new ArrayList<>();
             
             // 4.3 24小时班 休 休 排班：每3天一个周期，每个小组在周期内轮到一次
             // 每天都要有一组两人上24小时班，按照小组顺序轮流
@@ -210,26 +297,32 @@ public class DutyServiceImpl implements DutyService {
             // 记录当天上24小时班的oncall组员
             List<User> on24hDutyUsers = new ArrayList<>();
             
+            // 计算当前oncall组内部的天数（0-2），用于正确轮动小组
+            int onDutyGroupDay = dayOfPlan % 3;
+            
             // 确保每天都有小组值班
             if (!onDutyTeams.isEmpty()) {
-                // 计算当前应该轮到哪个小组：每天换一个小组
-                int teamIndex = dayOfPlan % onDutyTeams.size();
+                // 计算当前应该轮到哪个小组：每个oncall组内部每天换一个小组
+                int teamIndex = onDutyGroupDay % onDutyTeams.size();
                 List<User> currentTeam = onDutyTeams.get(teamIndex);
                 
-                // 检查当前小组是否有请假或需要休息的人员，如果有，从备份池中补充
+                // 检查当前小组是否有请假或需要休息的人员，如果有，从另一oncall组组员中补充
                 List<User> availableTeam = new ArrayList<>();
-                List<User> tempBackupPool = new ArrayList<>(backupPool);
+                List<User> tempBackupPool = new ArrayList<>(offDutyMembers);
                 
                 for (User user : currentTeam) {
                     // 检查用户是否可以在当天排班
                     boolean canWork = canUserWorkOnDate(user, currentDate);
-                    // 检查是否需要休息（上24小时班后休息2天）
-                    Date lastDutyDate = userLast24hDutyDate.get(user.getId());
-                    if (lastDutyDate != null) {
-                        long diffInDays = (currentDate.getTime() - lastDutyDate.getTime()) / (1000 * 60 * 60 * 24);
-                        // 如果距离上次24小时班不足3天，则需要休息
-                        if (diffInDays < 3) {
-                            canWork = false;
+                    // 只有oncall组的用户需要检查是否需要休息（上24小时班后休息2天）
+                    // oncall组的groupId是1或2
+                    if (user.getGroupId() == 1 || user.getGroupId() == 2) {
+                        Date lastDutyDate = userLast24hDutyDate.get(user.getId());
+                        if (lastDutyDate != null) {
+                            long diffInDays = (currentDate.getTime() - lastDutyDate.getTime()) / (1000 * 60 * 60 * 24);
+                            // 如果距离上次24小时班不足3天，则需要休息
+                            if (diffInDays < 3) {
+                                canWork = false;
+                            }
                         }
                     }
                     
@@ -237,7 +330,7 @@ public class DutyServiceImpl implements DutyService {
                         availableTeam.add(user);
                         on24hDutyUsers.add(user);
                     } else if (!tempBackupPool.isEmpty()) {
-                        // 从备份池中补充，补充人员已经经过休息检查
+                        // 从另一oncall组组员中补充，补充人员已经经过休息检查
                         User replacement = tempBackupPool.remove(0);
                         availableTeam.add(replacement);
                         on24hDutyUsers.add(replacement);
@@ -267,12 +360,12 @@ public class DutyServiceImpl implements DutyService {
                     // 记录用户上24小时班的日期
                     userLast24hDutyDate.put(user.getId(), currentDate);
                 }
-            } else if (!backupPool.isEmpty()) {
-                // 如果没有可用小组，从备份池中抽取2人组成临时小组
+            } else if (!offDutyMembers.isEmpty()) {
+                // 如果没有可用小组，从另一oncall组组员中抽取2人组成临时小组
                 List<User> tempTeam = new ArrayList<>();
-                tempTeam.add(backupPool.remove(0));
-                if (!backupPool.isEmpty()) {
-                    tempTeam.add(backupPool.remove(0));
+                tempTeam.add(offDutyMembers.get(0));
+                if (offDutyMembers.size() > 1) {
+                    tempTeam.add(offDutyMembers.get(1));
                 }
                 
                 // 为临时小组安排24小时班
@@ -296,7 +389,8 @@ public class DutyServiceImpl implements DutyService {
                 }
             }
             
-            // 4.4 将oncall在岗组中没有上24小时班的组员添加到backupPool，用于补充到其他组
+            // 4.4 准备用于补充到其他组的人员池
+            // 1. 先添加oncall在岗组中没有上24小时班的组员
             for (User user : onDutyMembers) {
                 // 检查用户是否当天上了24小时班
                 boolean isOn24hDuty = false;
@@ -311,7 +405,11 @@ public class DutyServiceImpl implements DutyService {
                 }
             }
             
-            // 4.5 确保backupPool中不包含当天上了24小时班的用户
+            // 2. 再添加oncall不在岗组的所有组员
+            // oncall不在岗组的组员不需要休息，因为他们没有上24小时班
+            backupPool.addAll(offDutyMembers);
+            
+            // 3. 确保backupPool中不包含当天上了24小时班的用户
             List<User> filteredBackupPool = new ArrayList<>();
             for (User user : backupPool) {
                 boolean isOn24hDuty = false;
@@ -354,7 +452,7 @@ public class DutyServiceImpl implements DutyService {
             // 从备份池中获取剩余人员
             List<User> remainingBackup = new ArrayList<>(backupPool);
             
-            // 优先往单人小组补充到3人
+            // 优先往单人小组（第4组）补充到3人
             if (gocTeams.get(3).size() < 3 && !remainingBackup.isEmpty()) {
                 while (gocTeams.get(3).size() < 3 && !remainingBackup.isEmpty()) {
                     gocTeams.get(3).add(remainingBackup.remove(0));
@@ -362,11 +460,17 @@ public class DutyServiceImpl implements DutyService {
             }
             
             // 剩余人员补充到其他小组
-            for (int i = 0; i < 3 && !remainingBackup.isEmpty(); i++) {
-                gocTeams.get(i).add(remainingBackup.remove(0));
+            for (int i = 0; i < 4 && !remainingBackup.isEmpty(); i++) {
+                // 跳过已经满3人的小组
+                if (gocTeams.get(i).size() < 3) {
+                    gocTeams.get(i).add(remainingBackup.remove(0));
+                }
             }
             
-            // 5.4 goc组员白班排班
+            // 5.4 将goc组不需要的剩余人员放回backupPool，用于补充到pm组
+            backupPool = remainingBackup;
+            
+            // 5.5 goc组员白班排班
             if (dayShift != null) {
                 for (int i = 0; i < gocTeams.size(); i++) {
                     List<User> team = gocTeams.get(i);
@@ -381,8 +485,8 @@ public class DutyServiceImpl implements DutyService {
                         plan.setAssignedSubGroupId(i + 1);
                         
                         // 设置兼大组和兼小组
-                        // 如果是从oncall组补充过来的，记录被分配到的goc大组
-                        if (offDutyMembers.contains(user) || onDutyMembers.contains(user)) {
+                        // 如果是从其他组补充过来的，记录被分配到的goc大组和小组
+                        if (!gocGroup.contains(user)) {
                             plan.setDutyGroupId(gocGroup.get(0).getGroupId()); // 分配到的goc大组
                             plan.setDutySubGroupId(i + 1); // 分配到的goc小组
                         }
@@ -407,27 +511,15 @@ public class DutyServiceImpl implements DutyService {
                     plans.add(pmPlan);
                 }
                 
-                // 2. 准备用于补充到pm组的候选人员池
-                List<User> pmBackupPool = new ArrayList<>();
-                
-                // 2.1 添加backupPool中的人员（不在岗的oncall组员和oncall在岗组中没有上24小时班的组员）
-                pmBackupPool.addAll(backupPool);
-                
-                // 2.2 添加tempGocMembers中未分配的人员
-                pmBackupPool.addAll(tempGocMembers);
-                
-                // 2.3 去重，确保同一人员不会被多次添加
-                List<User> uniquePmBackup = new ArrayList<>();
-                for (User user : pmBackupPool) {
-                    if (!uniquePmBackup.contains(user)) {
-                        uniquePmBackup.add(user);
+                // 2. 补充剩余的backupPool中的人员到pm组
+                for (User user : backupPool) {
+                    // 检查用户是否可以在当天上班
+                    if (!canUserWorkOnDate(user, currentDate)) {
+                        continue;
                     }
-                }
-                
-                // 2.4 筛选出未被安排到其他组的人员
-                for (User user : uniquePmBackup) {
+                    
+                    // 检查是否已经被分配到其他组
                     boolean isAlreadyAssigned = false;
-                    // 检查该用户是否已经被安排到其他组
                     for (DutyPlan plan : plans) {
                         if (plan.getUserId().equals(user.getId())) {
                             isAlreadyAssigned = true;
@@ -447,7 +539,10 @@ public class DutyServiceImpl implements DutyService {
                         // 设置兼大组和兼小组
                         // 如果是从其他组补充过来的，记录被分配到的pm大组，兼小组为无
                         if (!pmGroup.contains(user)) {
-                            pmPlan.setDutyGroupId(pmGroup.get(0).getGroupId()); // 分配到的pm大组
+                            // 确保pmGroup不为空，避免NullPointerException
+                            if (!pmGroup.isEmpty()) {
+                                pmPlan.setDutyGroupId(pmGroup.get(0).getGroupId()); // 分配到的pm大组
+                            }
                             // 兼小组设为null，前端显示为"无"
                         }
                         
@@ -576,7 +671,7 @@ public class DutyServiceImpl implements DutyService {
             return !(checkDate.after(adjustedLeaveStart) && checkDate.before(adjustedLeaveEnd)) && 
                    !checkDate.equals(adjustedLeaveStart) && !checkDate.equals(adjustedLeaveEnd);
         }
-        // 如果没有设置请假时间，或者status不是请假，都可以排班
+        // 如果没有设置请假时间，都可以排班
         return true;
     }
 }
