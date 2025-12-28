@@ -449,7 +449,7 @@ public class DutyServiceImpl implements DutyService {
             }
             
             // 5.3 补充不在岗的oncall组员到goc小组 - 补充到goc组的上白班
-            // 从备份池中获取剩余人员
+            // 从备份池中获取剩余人员，按照oncall组的小组顺序补充
             List<User> remainingBackup = new ArrayList<>(backupPool);
             
             // 优先往单人小组（第4组）补充到3人
@@ -459,8 +459,8 @@ public class DutyServiceImpl implements DutyService {
                 }
             }
             
-            // 剩余人员补充到其他小组
-            for (int i = 0; i < 4 && !remainingBackup.isEmpty(); i++) {
+            // 剩余人员补充到goc大组的其他小组，按照小组顺序1、2、3补充
+            for (int i = 0; i < 3 && !remainingBackup.isEmpty(); i++) {
                 // 跳过已经满3人的小组
                 if (gocTeams.get(i).size() < 3) {
                     gocTeams.get(i).add(remainingBackup.remove(0));
